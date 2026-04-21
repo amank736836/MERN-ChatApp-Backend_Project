@@ -135,5 +135,19 @@ dist
 
 # Optional stylelint cache
 
+# Testing artifacts
+test-results/
+playwright-report/
+blob-report/
+**/tests/__snapshots__/
+
+# Test files
+**/tests/**/*.test.js
+**/tests/**/*.spec.js
+**/tests/**/*.spec.tsx
+**/tests/**/*.spec.jsx
+**/tests/**/*.test.tsx
+**/tests/**/*.test.jsx
+[2K
 # SvelteKit build / generate output
 .svelte-kit

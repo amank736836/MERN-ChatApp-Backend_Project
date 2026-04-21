@@ -8,6 +8,8 @@ import {
 import userModel from "../models/user.models.js";
 import { ErrorHandler, TryCatch } from "./error.js";
 
+const getTokenUserId = (decodedData) => decodedData?.id || decodedData?._id;
+
 const isAuthenticated = TryCatch((req, res, next) => {
   const token = req.cookies[STEALTHY_NOTE_TOKEN_NAME];
 
@@ -21,7 +23,13 @@ const isAuthenticated = TryCatch((req, res, next) => {
     return next(new ErrorHandler("Invalid Token", 401));
   }
 
-  req.userId = decodedData.id;
+  const userId = getTokenUserId(decodedData);
+
+  if (!userId) {
+    return next(new ErrorHandler("Invalid Token", 401));
+  }
+
+  req.userId = userId;
 
   next();
 });
@@ -71,7 +79,13 @@ const isSocketAuthenticated = async (err, socket, next) => {
       return next(new ErrorHandler("Invalid Token", 401));
     }
 
-    const user = await userModel.findById(decodedData.id);
+    const userId = getTokenUserId(decodedData);
+
+    if (!userId) {
+      return next(new ErrorHandler("Invalid Token", 401));
+    }
+
+    const user = await userModel.findById(userId);
 
     if (!user) {
       return next(new ErrorHandler("User not found", 404));

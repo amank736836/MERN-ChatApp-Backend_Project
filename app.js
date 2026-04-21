@@ -111,7 +111,9 @@ if (!CLIENT_PRODUCTION_URL) {
   process.exit(1);
 }
 
-connectDB(MONGODB_URI);
+if (process.env.NODE_ENV !== 'test') {
+  connectDB(MONGODB_URI);
+}
 
 cloudinary.config({
   cloud_name: CLOUDINARY_CLOUD_NAME,
@@ -257,9 +259,11 @@ io.on(
 
 app.use(errorMiddleware);
 
-server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT} in ${NODE_ENV} mode`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT} in ${NODE_ENV} mode`);
+  });
+}
 
 // createUser(20);
 // createMessageInChat("681705f74b713bef198acf99", 50);
@@ -276,5 +280,7 @@ export {
   NODE_ENV,
   STEALTHY_NOTE_ADMIN_TOKEN_NAME,
   STEALTHY_NOTE_TOKEN_NAME,
-  userSocketIDs
+  userSocketIDs,
 };
+
+export default app;
