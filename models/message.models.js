@@ -27,6 +27,11 @@ const messageSchema = new Schema(
         default: "",
       },
     },
+    hiddenFromShowcase: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     attachments: [
       {
         public_id: {
