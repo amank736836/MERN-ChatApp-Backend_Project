@@ -15,6 +15,18 @@ const messageSchema = new Schema(
     content: {
       type: String,
     },
+    replyTo: {
+      senderName: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+      content: {
+        type: String,
+        trim: true,
+        default: "",
+      },
+    },
     attachments: [
       {
         public_id: {

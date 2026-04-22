@@ -612,7 +612,7 @@ const suggestMessages = TryCatch(async (req, res, next) => {
 });
 
 const sendMessage = TryCatch(async (req, res, next) => {
-  const { username, content, sender } = req.body;
+  const { username, content, sender, replyTo } = req.body;
 
   if (!username) {
     return next(new ErrorHandler("Username is required", 400));
@@ -647,6 +647,12 @@ const sendMessage = TryCatch(async (req, res, next) => {
     content: content,
     sender: sender ? sender._id : user._id,
     attachments: [],
+    replyTo: replyTo
+      ? {
+          senderName: replyTo.senderName || "",
+          content: replyTo.content || "",
+        }
+      : undefined,
   };
 
   const messageForRealTime = {

@@ -179,11 +179,17 @@ io.on(
 
     userSocketIDs.set(user._id.toString(), socket.id);
 
-    socket.on(NEW_MESSAGE, async ({ chatId, message, members }) => {
+    socket.on(NEW_MESSAGE, async ({ chatId, message, members, replyTo }) => {
       const messageForRealTime = {
         _id: uuid(),
         attachments: [],
         content: message,
+        replyTo: replyTo
+          ? {
+              senderName: replyTo.senderName || "",
+              content: replyTo.content || "",
+            }
+          : undefined,
         sender: {
           _id: user._id,
           name: user.name,
@@ -197,6 +203,12 @@ io.on(
         chat: chatId,
         sender: user._id,
         attachments: [],
+        replyTo: replyTo
+          ? {
+              senderName: replyTo.senderName || "",
+              content: replyTo.content || "",
+            }
+          : undefined,
       };
 
       const membersSocket = getSockets(members);
