@@ -4,6 +4,7 @@ import { v4 as uuid } from "uuid";
 import { ErrorHandler, TryCatch } from "../middlewares/error.js";
 import chatModel from "../models/chat.models.js";
 import messageModel from "../models/message.models.js";
+import suggestedQuestionModel from "../models/suggestedQuestion.models.js";
 import userModel from "../models/user.models.js";
 import {
   ALERT,
@@ -14,6 +15,7 @@ import {
 import {
   deleteFilesFromCloudinary,
   emitEvent,
+  getSockets,
   uploadFilesToCloudinary,
 } from "../utils/features.js";
 
@@ -611,40 +613,117 @@ const suggestMessages = TryCatch(async (req, res, next) => {
   });
 });
 
-const sendMessage = TryCatch(async (req, res, next) => {
-  const { username, content, sender, replyTo } = req.body;
+const normalizeQuestion = (value = "") =>
+  value
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
 
-  if (!username) {
-    return next(new ErrorHandler("Username is required", 400));
+const GLOBAL_SEED_QUESTIONS = [
+  "What is something small that made your day better recently?",
+  "If you could instantly learn one skill, what would it be and why?",
+  "What kind of conversation helps you feel most understood?",
+  "What is one goal you are currently working toward?",
+  "What helps you recharge after a stressful day?",
+  "What motivates you when you feel stuck?",
+  "If you could relive one day from last year, which day would it be?",
+  "What is one thing people often misunderstand about you?",
+  "What is your ideal weekend like from start to finish?",
+  "What is a fear you have overcome recently?",
+  "If you could travel anywhere this year, where would you go first?",
+  "What habit has improved your life the most?",
+];
+
+const ensureGlobalSeeds = async () => {
+  const operations = GLOBAL_SEED_QUESTIONS.map((question) => {
+    const normalized = normalizeQuestion(question);
+
+    return {
+      updateOne: {
+        filter: { targetUsername: null, normalizedQuestion: normalized },
+        update: {
+          $setOnInsert: {
+            targetUsername: null,
+            question,
+            normalizedQuestion: normalized,
+            askedCount: 0,
+            answer: "",
+            answeredAt: null,
+          },
+        },
+        upsert: true,
+      },
+    };
+  });
+
+  try {
+    await suggestedQuestionModel.bulkWrite(operations, { ordered: false });
+  } catch (error) {
+    const hasOnlyDupErrors =
+      Array.isArray(error?.writeErrors) &&
+      error.writeErrors.length > 0 &&
+      error.writeErrors.every((item) => item?.code === 11000);
+
+    if (!hasOnlyDupErrors) {
+      throw error;
+    }
   }
+};
 
-  if (!content) {
-    return next(new ErrorHandler("Message content is required", 400));
-  }
-
+const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo }) => {
   const user = await userModel.findOne({ username });
 
   if (!user) {
-    return next(new ErrorHandler("User not found", 404));
+    throw new ErrorHandler("User not found", 404);
   }
 
   if (!user.isAcceptingMessage) {
-    return next(new ErrorHandler("User is not accepting messages", 400));
+    throw new ErrorHandler("User is not accepting messages", 400);
   }
 
-  const chat = await chatModel.findById(user._id);
+  let chatId = null;
+  let targetMembers = [user._id];
 
-  if (!chat) {
-    return next(new ErrorHandler("Chat not found", 404));
+  if (sender?._id) {
+    const existingChat = await chatModel.findOne({
+      groupChat: false,
+      members: { $all: [sender._id, user._id] },
+    });
+
+    if (existingChat) {
+      chatId = existingChat._id;
+      targetMembers = existingChat.members;
+    } else {
+      const newChat = await chatModel.create({
+        name: `${user.name}`,
+        groupChat: false,
+        members: [sender._id, user._id],
+      });
+      chatId = newChat._id;
+      targetMembers = newChat.members;
+    }
+  } else {
+    let userChat = await chatModel.findOne({
+      groupChat: false,
+      members: [user._id],
+      name: `${user.name} - Messages`,
+    });
+
+    if (!userChat) {
+      userChat = await chatModel.create({
+        name: `${user.name} - Messages`,
+        groupChat: false,
+        members: [user._id],
+      });
+    }
+
+    chatId = userChat._id;
+    targetMembers = [user._id];
   }
-
-  const existingChat = await chatModel.findOne({
-    members: { $all: [sender?._id, user._id] },
-  });
 
   const messageForDB = {
-    chat: existingChat ? existingChat._id : chat._id,
-    content: content,
+    chat: chatId,
+    content,
     sender: sender ? sender._id : user._id,
     attachments: [],
     replyTo: replyTo
@@ -659,7 +738,7 @@ const sendMessage = TryCatch(async (req, res, next) => {
     ...messageForDB,
     sender: {
       _id: sender ? sender._id : user._id,
-      name: "Anonymous",
+      name: sender ? sender.name : "Anonymous",
     },
     _id: uuid(),
     createdAt: new Date().toISOString(),
@@ -667,21 +746,133 @@ const sendMessage = TryCatch(async (req, res, next) => {
 
   const message = await messageModel.create(messageForDB);
 
-  if (existingChat) {
-    emitEvent(req, NEW_MESSAGE, existingChat.members, {
+  const receiverSocketId = getSockets([user._id])[0];
+  const receiverIsActive = Boolean(receiverSocketId);
+
+  if (receiverIsActive) {
+    emitEvent(req, NEW_MESSAGE, targetMembers, {
       message: messageForRealTime,
-      chatId: existingChat._id,
+      chatId: messageForDB.chat,
     });
-  } else {
-    emitEvent(req, NEW_MESSAGE, chat.members, {
-      message: messageForRealTime,
-      chatId: chat._id,
+
+    emitEvent(req, NEW_MESSAGE_ALERT, targetMembers, {
+      chatId: messageForDB.chat,
     });
+  }
+
+  return {
+    message,
+    realtimeDelivered: receiverIsActive,
+  };
+};
+
+const askAndRecord = TryCatch(async (req, res, next) => {
+  const { username, question, content, sender, replyTo } = req.body;
+
+  const normalizedUsername = (username || "").trim().toLowerCase();
+  const trimmedQuestion = (question || "").trim();
+  const trimmedContent = (content || "").trim();
+
+  if (!normalizedUsername || !trimmedQuestion || !trimmedContent) {
+    return next(
+      new ErrorHandler("username, question, and content are required", 400)
+    );
+  }
+
+  await ensureGlobalSeeds();
+
+  const normalizedQuestion = normalizeQuestion(trimmedQuestion);
+
+  let existing;
+  try {
+    existing = await suggestedQuestionModel.findOneAndUpdate(
+      { targetUsername: normalizedUsername, normalizedQuestion },
+      {
+        $setOnInsert: {
+          targetUsername: normalizedUsername,
+          question: trimmedQuestion,
+          normalizedQuestion,
+          answer: "",
+          answeredAt: null,
+        },
+        $inc: { askedCount: 1 },
+      },
+      { upsert: true, new: true }
+    );
+  } catch (error) {
+    const duplicateError = error?.code === 11000;
+    if (!duplicateError) {
+      throw error;
+    }
+
+    existing = await suggestedQuestionModel.findOneAndUpdate(
+      { targetUsername: normalizedUsername, normalizedQuestion },
+      { $inc: { askedCount: 1 } },
+      { new: true }
+    );
+  }
+
+  if (!existing) {
+    existing = await suggestedQuestionModel.findOne({
+      targetUsername: normalizedUsername,
+      normalizedQuestion,
+    });
+  }
+
+  const alreadyAnswered = Boolean(existing?.answer?.trim());
+  const answeredQuestion = alreadyAnswered ? existing.question : null;
+  const answeredAnswer = alreadyAnswered ? existing.answer : null;
+
+  let messageSent = false;
+  let realtimeDelivered = false;
+
+  if (!alreadyAnswered) {
+    const deliveryResult = await storeAndDeliverMessage({
+      req,
+      username: normalizedUsername,
+      content: trimmedContent,
+      sender,
+      replyTo,
+    });
+
+    messageSent = Boolean(deliveryResult?.message?._id);
+    realtimeDelivered = Boolean(deliveryResult?.realtimeDelivered);
   }
 
   return res.status(200).json({
     success: true,
+    alreadyAnswered,
+    answeredQuestion,
+    answeredAnswer,
+    messageSent,
+    realtimeDelivered,
+  });
+});
+
+const sendMessage = TryCatch(async (req, res, next) => {
+  const { username, content, sender, replyTo } = req.body;
+
+  if (!username) {
+    return next(new ErrorHandler("Username is required", 400));
+  }
+
+  if (!content) {
+    return next(new ErrorHandler("Message content is required", 400));
+  }
+
+  const deliveryResult = await storeAndDeliverMessage({
+    req,
+    username: (username || "").trim().toLowerCase(),
+    content,
+    sender,
+    replyTo,
+  });
+
+  return res.status(200).json({
+    success: true,
     message: "Message sent successfully",
+    messageStored: Boolean(deliveryResult?.message?._id),
+    realtimeDelivered: Boolean(deliveryResult?.realtimeDelivered),
   });
 });
 
@@ -694,6 +885,7 @@ export {
   getMyGroups,
   leaveGroup,
   newGroupChat,
+  askAndRecord,
   removeMember,
   renameGroup,
   sendAttachments,

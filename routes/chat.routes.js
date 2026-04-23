@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   addGroupMembers,
+  askAndRecord,
   deleteChat,
   getChatDetails,
   getMessages,
@@ -29,6 +30,8 @@ import {
 const chatRouter = Router();
 
 chatRouter.post("/suggestMessages", suggestMessages);
+
+chatRouter.post("/ask-and-record", askAndRecord);
 
 chatRouter.post("/sendMessage", sendMessage);
 
