@@ -27,6 +27,11 @@ const messageSchema = new Schema(
         default: "",
       },
     },
+    isAnonymous: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     hiddenFromShowcase: {
       type: Boolean,
       default: false,

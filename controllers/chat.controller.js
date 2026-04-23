@@ -560,8 +560,9 @@ const getMessages = TryCatch(async (req, res, next) => {
     }),
   ]);
 
-  if (chatId === req.userId) {
+  if (!chat.groupChat && chat.members.length === 1) {
     messages.forEach((message) => {
+      message.isAnonymous = true;
       message.sender = {
         ...message.sender,
         name: "Anonymous",
@@ -725,6 +726,7 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
     chat: chatId,
     content,
     sender: sender ? sender._id : user._id,
+    isAnonymous: !sender?._id,
     attachments: [],
     replyTo: replyTo
       ? {
