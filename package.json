@@ -8,7 +8,8 @@
     "test": "vitest",
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "cleanup:anonymous": "node scripts/delete-legacy-anonymous-messages.js"
+    "cleanup:anonymous": "node scripts/delete-legacy-anonymous-messages.js",
+    "ensure:anonymous-inbox": "node scripts/ensure-anonymous-inbox-chats.js"
   },
   "keywords": [],
   "author": "",

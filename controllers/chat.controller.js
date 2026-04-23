@@ -564,11 +564,22 @@ const getMessages = TryCatch(async (req, res, next) => {
 
   if (!chat.groupChat && chat.members.length === 1) {
     messages.forEach((message) => {
+      const hasLegacyAnonymousShape =
+        message?.isAnonymous === undefined &&
+        !(message?.replyTo?.content || "").trim();
+
+      const shouldRenderAnonymous =
+        Boolean(message?.isAnonymous) || hasLegacyAnonymousShape;
+
+      if (shouldRenderAnonymous) {
       message.isAnonymous = true;
       message.sender = {
         ...message.sender,
         name: "Anonymous",
       };
+      } else {
+        message.isAnonymous = false;
+      }
     });
   }
 
@@ -713,14 +724,14 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
       userChat = await chatModel.findOne({
         groupChat: false,
         members: [user._id],
-        name: `${user.name} - Messages`,
+        name: `${user.username} - Messages`,
       });
     }
 
     if (!userChat) {
       userChat = await chatModel.create({
         _id: user._id,
-        name: `${user.name} - Messages`,
+        name: `${user.username} - Messages`,
         groupChat: false,
         members: [user._id],
       });
