@@ -66,7 +66,7 @@ const getMyChats = TryCatch(async (req, res, next) => {
 
   const transformedChats = chats.map(({ _id, name, members, groupChat }) => {
     let otherMember = null;
-    if (_id.toString() !== req.userId) {
+    if (String(_id) !== String(req.userId)) {
       otherMember = members.find(
         (member) => member._id.toString() !== req.userId
       );
@@ -76,11 +76,13 @@ const getMyChats = TryCatch(async (req, res, next) => {
 
     return {
       _id,
-      name: groupChat ? name : otherMember?.name,
+      name: groupChat
+        ? name
+        : otherMember?.name || "Anonymous Inbox",
       groupChat,
       avatar: groupChat
         ? members.slice(0, 3).map(({ avatar }) => avatar.url)
-        : [otherMember.avatar.url],
+        : [otherMember?.avatar?.url || ""],
       members: members.reduce((acc, member) => {
         if (member._id.toString() !== req.userId) {
           acc.push(member._id);
@@ -704,14 +706,20 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
       targetMembers = newChat.members;
     }
   } else {
-    let userChat = await chatModel.findOne({
-      groupChat: false,
-      members: [user._id],
-      name: `${user.name} - Messages`,
-    });
+    // Keep anonymous inbox bound to the owner's user id chat for stable routing/realtime updates.
+    let userChat = await chatModel.findById(user._id);
+
+    if (!userChat) {
+      userChat = await chatModel.findOne({
+        groupChat: false,
+        members: [user._id],
+        name: `${user.name} - Messages`,
+      });
+    }
 
     if (!userChat) {
       userChat = await chatModel.create({
+        _id: user._id,
         name: `${user.name} - Messages`,
         groupChat: false,
         members: [user._id],
