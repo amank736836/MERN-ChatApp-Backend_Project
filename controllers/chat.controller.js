@@ -804,40 +804,94 @@ const askAndRecord = TryCatch(async (req, res, next) => {
 
   const normalizedQuestion = normalizeQuestion(trimmedQuestion);
 
-  let existing;
-  try {
-    existing = await suggestedQuestionModel.findOneAndUpdate(
-      { targetUsername: normalizedUsername, normalizedQuestion },
-      {
-        $setOnInsert: {
-          targetUsername: normalizedUsername,
-          question: trimmedQuestion,
-          normalizedQuestion,
-          answer: "",
-          answeredAt: null,
-        },
-        $inc: { askedCount: 1 },
-      },
-      { upsert: true, new: true }
-    );
-  } catch (error) {
-    const duplicateError = error?.code === 11000;
-    if (!duplicateError) {
-      throw error;
-    }
+  let existing = await suggestedQuestionModel.findOne({
+    targetUsername: normalizedUsername,
+    normalizedQuestion,
+  });
 
-    existing = await suggestedQuestionModel.findOneAndUpdate(
-      { targetUsername: normalizedUsername, normalizedQuestion },
-      { $inc: { askedCount: 1 } },
-      { new: true }
-    );
+  if (existing?.answer?.trim()) {
+    return res.status(200).json({
+      success: true,
+      alreadyAsked: true,
+      alreadyAnswered: true,
+      answeredQuestion: existing.question,
+      answeredAnswer: existing.answer,
+      messageSent: false,
+      realtimeDelivered: false,
+    });
   }
 
-  if (!existing) {
-    existing = await suggestedQuestionModel.findOne({
-      targetUsername: normalizedUsername,
-      normalizedQuestion,
+  if (existing && (existing.askedCount || 0) > 0) {
+    return res.status(200).json({
+      success: true,
+      alreadyAsked: true,
+      alreadyAnswered: false,
+      answeredQuestion: null,
+      answeredAnswer: null,
+      messageSent: false,
+      realtimeDelivered: false,
     });
+  }
+
+  if (existing) {
+    existing = await suggestedQuestionModel.findOneAndUpdate(
+      { _id: existing._id },
+      {
+        $set: { question: trimmedQuestion },
+        $inc: { askedCount: 1 },
+      },
+      { new: true }
+    );
+  } else {
+    try {
+      existing = await suggestedQuestionModel.findOneAndUpdate(
+        { targetUsername: normalizedUsername, normalizedQuestion },
+        {
+          $setOnInsert: {
+            targetUsername: normalizedUsername,
+            question: trimmedQuestion,
+            normalizedQuestion,
+            answer: "",
+            answeredAt: null,
+          },
+          $inc: { askedCount: 1 },
+        },
+        { upsert: true, new: true }
+      );
+    } catch (error) {
+      const duplicateError = error?.code === 11000;
+      if (!duplicateError) {
+        throw error;
+      }
+
+      existing = await suggestedQuestionModel.findOne({
+        targetUsername: normalizedUsername,
+        normalizedQuestion,
+      });
+
+      if (existing && (existing.askedCount || 0) > 0) {
+        return res.status(200).json({
+          success: true,
+          alreadyAsked: true,
+          alreadyAnswered: Boolean(existing.answer?.trim()),
+          answeredQuestion: existing.answer?.trim() ? existing.question : null,
+          answeredAnswer: existing.answer?.trim() ? existing.answer : null,
+          messageSent: false,
+          realtimeDelivered: false,
+        });
+      }
+
+      if (existing) {
+        existing = await suggestedQuestionModel.findOneAndUpdate(
+          { _id: existing._id },
+          {
+            $set: { question: trimmedQuestion },
+            $inc: { askedCount: 1 },
+          },
+          { new: true }
+        );
+      }
+    }
   }
 
   const alreadyAnswered = Boolean(existing?.answer?.trim());
@@ -862,6 +916,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
 
   return res.status(200).json({
     success: true,
+    alreadyAsked: false,
     alreadyAnswered,
     answeredQuestion,
     answeredAnswer,
