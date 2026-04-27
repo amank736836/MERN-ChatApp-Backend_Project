@@ -354,13 +354,20 @@ const getMyProfile = TryCatch(async (req, res, next) => {
   if (!req.userId)
     return next(new ErrorHandler("Login to access this resource", 401));
 
-  const user = await userModel.findById(req.userId);
+  const [user, notificationCount] = await Promise.all([
+    userModel.findById(req.userId),
+    requestModel.countDocuments({
+      receiver: req.userId,
+      status: "pending",
+    }),
+  ]);
 
   if (!user) return next(new ErrorHandler("User not found", 404));
 
   res.status(200).json({
     success: true,
     user,
+    notificationCount,
   });
 });
 
@@ -521,7 +528,10 @@ const acceptFriendRequest = TryCatch(async (req, res, next) => {
         { sender: req.userId, chat: request.sender._id },
       ],
     },
-    { chat: chat._id }
+    {
+      chat: chat._id,
+      isAnonymous: false,
+    }
   );
 
   await request.deleteOne();

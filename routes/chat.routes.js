@@ -11,6 +11,7 @@ import {
   newGroupChat,
   removeMember,
   renameGroup,
+  sendAnonymousFriendRequest,
   sendAttachments,
   sendMessage,
   suggestMessages,
@@ -36,6 +37,8 @@ chatRouter.post("/ask-and-record", askAndRecord);
 chatRouter.post("/sendMessage", sendMessage);
 
 chatRouter.use(isAuthenticated);
+
+chatRouter.put("/anonymous-request", sendAnonymousFriendRequest);
 
 chatRouter.get("/", getMyChats);
 

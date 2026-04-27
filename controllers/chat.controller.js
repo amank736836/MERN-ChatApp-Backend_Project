@@ -1,15 +1,19 @@
 import { google } from "@ai-sdk/google";
 import { streamText } from "ai";
+import jwt from "jsonwebtoken";
 import { v4 as uuid } from "uuid";
+import { JWT_SECRET, STEALTHY_NOTE_TOKEN_NAME } from "../app.js";
 import { ErrorHandler, TryCatch } from "../middlewares/error.js";
 import chatModel from "../models/chat.models.js";
 import messageModel from "../models/message.models.js";
+import requestModel from "../models/request.models.js";
 import suggestedQuestionModel from "../models/suggestedQuestion.models.js";
 import userModel from "../models/user.models.js";
 import {
   ALERT,
   NEW_MESSAGE,
   NEW_MESSAGE_ALERT,
+  NEW_REQUEST,
   REFETCH_CHATS,
 } from "../utils/events.js";
 import {
@@ -18,6 +22,27 @@ import {
   getSockets,
   uploadFilesToCloudinary,
 } from "../utils/features.js";
+
+const getTokenUserId = (decodedData) => decodedData?.id || decodedData?._id;
+
+const resolveSenderFromCookie = async (req) => {
+  try {
+    const token = req?.cookies?.[STEALTHY_NOTE_TOKEN_NAME];
+
+    if (!token) return null;
+
+    const decodedData = jwt.verify(token, JWT_SECRET);
+    const senderId = getTokenUserId(decodedData);
+
+    if (!senderId) return null;
+
+    const sender = await userModel.findById(senderId).select("_id name username").lean();
+
+    return sender || null;
+  } catch {
+    return null;
+  }
+};
 
 const newGroupChat = TryCatch(async (req, res, next) => {
   const { name, otherMembers } = req.body;
@@ -572,13 +597,16 @@ const getMessages = TryCatch(async (req, res, next) => {
         Boolean(message?.isAnonymous) || hasLegacyAnonymousShape;
 
       if (shouldRenderAnonymous) {
-      message.isAnonymous = true;
-      message.sender = {
-        ...message.sender,
-        name: "Anonymous",
-      };
+        const senderId = String(message?.sender?._id || "");
+        const isCurrentUserMessage = senderId === String(req.userId);
+        message.isAnonymous = true;
+        message.canAddFriend = Boolean(senderId) && !isCurrentUserMessage;
+        message.sender = {
+          name: "Anonymous",
+        };
       } else {
         message.isAnonymous = false;
+        message.canAddFriend = false;
       }
     });
   }
@@ -684,7 +712,14 @@ const ensureGlobalSeeds = async () => {
   }
 };
 
-const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo }) => {
+const storeAndDeliverMessage = async ({
+  req,
+  username,
+  content,
+  sender,
+  replyTo,
+  forceAnonymous = false,
+}) => {
   const user = await userModel.findOne({ username });
 
   if (!user) {
@@ -697,8 +732,9 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
 
   let chatId = null;
   let targetMembers = [user._id];
+  let isAnonymousForMessage = true;
 
-  if (sender?._id) {
+  if (sender?._id && !forceAnonymous) {
     const existingChat = await chatModel.findOne({
       groupChat: false,
       members: { $all: [sender._id, user._id] },
@@ -707,6 +743,7 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
     if (existingChat) {
       chatId = existingChat._id;
       targetMembers = existingChat.members;
+      isAnonymousForMessage = false;
     } else {
       const newChat = await chatModel.create({
         name: `${user.name}`,
@@ -715,9 +752,10 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
       });
       chatId = newChat._id;
       targetMembers = newChat.members;
+      isAnonymousForMessage = false;
     }
   } else {
-    // Keep anonymous inbox bound to the owner's user id chat for stable routing/realtime updates.
+    // Keep board messages in owner's anonymous inbox chat.
     let userChat = await chatModel.findById(user._id);
 
     if (!userChat) {
@@ -739,13 +777,16 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
 
     chatId = userChat._id;
     targetMembers = [user._id];
+    isAnonymousForMessage = true;
   }
+
+  const senderIdForMessage = sender ? sender._id : user._id;
 
   const messageForDB = {
     chat: chatId,
     content,
-    sender: sender ? sender._id : user._id,
-    isAnonymous: !sender?._id,
+    sender: senderIdForMessage,
+    isAnonymous: isAnonymousForMessage,
     attachments: [],
     replyTo: replyTo
       ? {
@@ -755,17 +796,17 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
       : undefined,
   };
 
+  const message = await messageModel.create(messageForDB);
+
   const messageForRealTime = {
     ...messageForDB,
     sender: {
-      _id: sender ? sender._id : user._id,
-      name: sender ? sender.name : "Anonymous",
+      name: isAnonymousForMessage ? "Anonymous" : sender?.name || user.name,
     },
-    _id: uuid(),
-    createdAt: new Date().toISOString(),
+    canAddFriend: isAnonymousForMessage && Boolean(sender?._id),
+    _id: message._id,
+    createdAt: message.createdAt,
   };
-
-  const message = await messageModel.create(messageForDB);
 
   const receiverSocketId = getSockets([user._id])[0];
   const receiverIsActive = Boolean(receiverSocketId);
@@ -787,8 +828,71 @@ const storeAndDeliverMessage = async ({ req, username, content, sender, replyTo 
   };
 };
 
+const sendAnonymousFriendRequest = TryCatch(async (req, res, next) => {
+  const { messageId } = req.body;
+
+  if (!messageId) {
+    return next(new ErrorHandler("Message ID is required", 400));
+  }
+
+  const message = await messageModel.findById(messageId).lean();
+
+  if (!message) {
+    return next(new ErrorHandler("Message not found", 404));
+  }
+
+  if (!message.isAnonymous) {
+    return next(new ErrorHandler("Message is not anonymous", 400));
+  }
+
+  if (String(message.chat) !== String(req.userId)) {
+    return next(new ErrorHandler("Unauthorized anonymous message access", 403));
+  }
+
+  const targetUserId = String(message.sender || "");
+
+  if (!targetUserId || targetUserId === String(req.userId)) {
+    return next(new ErrorHandler("Invalid anonymous sender", 400));
+  }
+
+  const [requestSent, requestReceived, existingPrivateChat] = await Promise.all([
+    requestModel.findOne({ sender: req.userId, receiver: targetUserId }),
+    requestModel.findOne({ sender: targetUserId, receiver: req.userId }),
+    chatModel.findOne({
+      groupChat: false,
+      members: { $all: [req.userId, targetUserId] },
+    }),
+  ]);
+
+  if (existingPrivateChat) {
+    return res.status(200).json({
+      success: true,
+      message: "You are already connected in private chat",
+    });
+  }
+
+  if (requestSent || requestReceived) {
+    return res.status(200).json({
+      success: true,
+      message: "Friend request already exists",
+    });
+  }
+
+  await requestModel.create({
+    sender: req.userId,
+    receiver: targetUserId,
+  });
+
+  emitEvent(req, NEW_REQUEST, [targetUserId], "New friend request received");
+
+  return res.status(200).json({
+    success: true,
+    message: "Friend request sent successfully",
+  });
+});
+
 const askAndRecord = TryCatch(async (req, res, next) => {
-  const { username, question, content, sender, replyTo } = req.body;
+  const { username, question, content, replyTo } = req.body;
 
   const normalizedUsername = (username || "").trim().toLowerCase();
   const trimmedQuestion = (question || "").trim();
@@ -902,12 +1006,15 @@ const askAndRecord = TryCatch(async (req, res, next) => {
   let realtimeDelivered = false;
 
   if (!alreadyAnswered) {
+    const senderFromCookie = await resolveSenderFromCookie(req);
+
     const deliveryResult = await storeAndDeliverMessage({
       req,
       username: normalizedUsername,
       content: trimmedContent,
-      sender,
+      sender: senderFromCookie,
       replyTo,
+      forceAnonymous: true,
     });
 
     messageSent = Boolean(deliveryResult?.message?._id);
@@ -926,7 +1033,7 @@ const askAndRecord = TryCatch(async (req, res, next) => {
 });
 
 const sendMessage = TryCatch(async (req, res, next) => {
-  const { username, content, sender, replyTo } = req.body;
+  const { username, content, replyTo } = req.body;
 
   if (!username) {
     return next(new ErrorHandler("Username is required", 400));
@@ -936,11 +1043,13 @@ const sendMessage = TryCatch(async (req, res, next) => {
     return next(new ErrorHandler("Message content is required", 400));
   }
 
+  const senderFromCookie = await resolveSenderFromCookie(req);
+
   const deliveryResult = await storeAndDeliverMessage({
     req,
     username: (username || "").trim().toLowerCase(),
     content,
-    sender,
+    sender: senderFromCookie,
     replyTo,
   });
 
@@ -964,6 +1073,7 @@ export {
   askAndRecord,
   removeMember,
   renameGroup,
+  sendAnonymousFriendRequest,
   sendAttachments,
   sendMessage,
   suggestMessages,
