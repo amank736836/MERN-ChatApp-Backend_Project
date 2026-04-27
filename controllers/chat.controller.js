@@ -658,6 +658,13 @@ const suggestMessages = TryCatch(async (req, res, next) => {
 const normalizeQuestion = (value = "") =>
   value
     .trim()
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const normalizeQuestionLegacy = (value = "") =>
+  value
+    .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();
 
@@ -907,13 +914,24 @@ const askAndRecord = TryCatch(async (req, res, next) => {
   await ensureGlobalSeeds();
 
   const normalizedQuestion = normalizeQuestion(trimmedQuestion);
+  const legacyNormalizedQuestion = normalizeQuestionLegacy(trimmedQuestion);
+  const normalizedQuestionCandidates = [
+    normalizedQuestion,
+    legacyNormalizedQuestion,
+  ].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
 
   let existing = await suggestedQuestionModel.findOne({
     targetUsername: normalizedUsername,
-    normalizedQuestion,
+    normalizedQuestion: { $in: normalizedQuestionCandidates },
   });
 
   if (existing?.answer?.trim()) {
+    existing = await suggestedQuestionModel.findOneAndUpdate(
+      { _id: existing._id },
+      { $inc: { askedCount: 1 } },
+      { new: true }
+    );
+
     return res.status(200).json({
       success: true,
       alreadyAsked: true,
@@ -926,6 +944,12 @@ const askAndRecord = TryCatch(async (req, res, next) => {
   }
 
   if (existing && (existing.askedCount || 0) > 0) {
+    existing = await suggestedQuestionModel.findOneAndUpdate(
+      { _id: existing._id },
+      { $inc: { askedCount: 1 } },
+      { new: true }
+    );
+
     return res.status(200).json({
       success: true,
       alreadyAsked: true,
@@ -941,7 +965,10 @@ const askAndRecord = TryCatch(async (req, res, next) => {
     existing = await suggestedQuestionModel.findOneAndUpdate(
       { _id: existing._id },
       {
-        $set: { question: trimmedQuestion },
+        $set: {
+          question: trimmedQuestion,
+          normalizedQuestion,
+        },
         $inc: { askedCount: 1 },
       },
       { new: true }
@@ -970,10 +997,16 @@ const askAndRecord = TryCatch(async (req, res, next) => {
 
       existing = await suggestedQuestionModel.findOne({
         targetUsername: normalizedUsername,
-        normalizedQuestion,
+        normalizedQuestion: { $in: normalizedQuestionCandidates },
       });
 
       if (existing && (existing.askedCount || 0) > 0) {
+        existing = await suggestedQuestionModel.findOneAndUpdate(
+          { _id: existing._id },
+          { $inc: { askedCount: 1 } },
+          { new: true }
+        );
+
         return res.status(200).json({
           success: true,
           alreadyAsked: true,
@@ -989,7 +1022,10 @@ const askAndRecord = TryCatch(async (req, res, next) => {
         existing = await suggestedQuestionModel.findOneAndUpdate(
           { _id: existing._id },
           {
-            $set: { question: trimmedQuestion },
+            $set: {
+              question: trimmedQuestion,
+              normalizedQuestion,
+            },
             $inc: { askedCount: 1 },
           },
           { new: true }
