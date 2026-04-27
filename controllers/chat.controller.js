@@ -14,6 +14,7 @@ import {
   NEW_MESSAGE,
   NEW_MESSAGE_ALERT,
   NEW_REQUEST,
+  QUESTION_ASKED,
   REFETCH_CHATS,
 } from "../utils/events.js";
 import {
@@ -932,6 +933,20 @@ const askAndRecord = TryCatch(async (req, res, next) => {
       { new: true }
     );
 
+    // Emit real-time update to board owner
+    const boardOwner = await userModel.findOne({
+      username: normalizedUsername,
+    }).lean();
+
+    if (boardOwner) {
+      emitEvent(req, QUESTION_ASKED, [boardOwner._id], {
+        questionId: existing._id,
+        question: existing.question,
+        askedCount: existing.askedCount || 1,
+        normalizedQuestion: existing.normalizedQuestion,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       alreadyAsked: true,
@@ -949,6 +964,20 @@ const askAndRecord = TryCatch(async (req, res, next) => {
       { $inc: { askedCount: 1 } },
       { new: true }
     );
+
+    // Emit real-time update to board owner
+    const boardOwner = await userModel.findOne({
+      username: normalizedUsername,
+    }).lean();
+
+    if (boardOwner) {
+      emitEvent(req, QUESTION_ASKED, [boardOwner._id], {
+        questionId: existing._id,
+        question: existing.question,
+        askedCount: existing.askedCount || 1,
+        normalizedQuestion: existing.normalizedQuestion,
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -1007,6 +1036,20 @@ const askAndRecord = TryCatch(async (req, res, next) => {
           { new: true }
         );
 
+        // Emit real-time update to board owner
+        const boardOwner = await userModel.findOne({
+          username: normalizedUsername,
+        }).lean();
+
+        if (boardOwner) {
+          emitEvent(req, QUESTION_ASKED, [boardOwner._id], {
+            questionId: existing._id,
+            question: existing.question,
+            askedCount: existing.askedCount || 1,
+            normalizedQuestion: existing.normalizedQuestion,
+          });
+        }
+
         return res.status(200).json({
           success: true,
           alreadyAsked: true,
@@ -1056,17 +1099,31 @@ const askAndRecord = TryCatch(async (req, res, next) => {
     messageSent = Boolean(deliveryResult?.message?._id);
     realtimeDelivered = Boolean(deliveryResult?.realtimeDelivered);
   }
-
-  return res.status(200).json({
-    success: true,
-    alreadyAsked: false,
-    alreadyAnswered,
-    answeredQuestion,
-    answeredAnswer,
-    messageSent,
-    realtimeDelivered,
+  
+    // Emit real-time update to board owner about ask count
+    const boardOwner = await userModel.findOne({
+      username: normalizedUsername,
+    }).lean();
+  
+    if (boardOwner && existing) {
+      emitEvent(req, QUESTION_ASKED, [boardOwner._id], {
+        questionId: existing._id,
+        question: existing.question,
+        askedCount: existing.askedCount || 1,
+        normalizedQuestion: existing.normalizedQuestion,
+      });
+    }
+  
+    return res.status(200).json({
+      success: true,
+      alreadyAsked: false,
+      alreadyAnswered,
+      answeredQuestion,
+      answeredAnswer,
+      messageSent,
+      realtimeDelivered,
+    });
   });
-});
 
 const sendMessage = TryCatch(async (req, res, next) => {
   const { username, content, replyTo } = req.body;
